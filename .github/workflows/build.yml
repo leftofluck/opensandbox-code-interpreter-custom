@@ -1,0 +1,237 @@
+name: Build opensandbox-code-interpreter-custom Image
+
+on:
+  workflow_dispatch:
+  schedule:
+    # 6時間ごとに最新状態を確認
+    - cron: "0 */6 * * *"
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  UPSTREAM_IMAGE: opensandbox/code-interpreter
+  IMAGE_NAME: opensandbox-code-interpreter-custom
+
+jobs:
+  determine:
+    runs-on: ubuntu-latest
+    outputs:
+      desired_hash: ${{ steps.deps.outputs.state_hash }}
+      should_build: ${{ steps.compare.outputs.should_build }}
+
+    steps:
+      # ============================================================
+      # Step 1: Upstream (Docker Hub) の latest digest を取得
+      # ============================================================
+      - name: Resolve upstream Docker Hub digest
+        id: upstream
+        run: |
+          TOKEN=$(curl -fsSL "https://auth.docker.io/token?service=registry.docker.io&scope=repository:${UPSTREAM_IMAGE}:pull" | jq -r '.token')
+          MANIFEST_JSON=$(curl -fsSL \
+            -H "Authorization: Bearer ${TOKEN}" \
+            -H "Accept: application/vnd.docker.distribution.manifest.v2+json, application/vnd.oci.image.index.v1+json" \
+            "https://registry-1.docker.io/v2/${UPSTREAM_IMAGE}/manifests/latest")
+
+          AMD64_DIGEST=$(echo "${MANIFEST_JSON}" | jq -r '
+            if .manifests then
+              .manifests[] | select(.platform.architecture=="amd64") | .digest
+            else
+              empty
+            end
+          ' | head -n1)
+
+          if [ -z "${AMD64_DIGEST}" ]; then
+            AMD64_DIGEST=$(curl -fsSL -I \
+              -H "Authorization: Bearer ${TOKEN}" \
+              -H "Accept: application/vnd.docker.distribution.manifest.v2+json" \
+              "https://registry-1.docker.io/v2/${UPSTREAM_IMAGE}/manifests/latest" \
+              | tr -d '\r' | awk -F': ' 'tolower($1)=="docker-content-digest"{print $2}')
+          fi
+
+          echo "Base image digest: ${AMD64_DIGEST}"
+          echo "digest=${AMD64_DIGEST}" >> "$GITHUB_OUTPUT"
+
+      # ============================================================
+      # Step 2: 各言語・ツールの最新バージョンを動的に解決し State Hash を算出
+      # ============================================================
+      - name: Resolve all dependencies latest versions
+        id: deps
+        run: |
+          BASE_DIGEST="${{ steps.upstream.outputs.digest }}"
+
+          # 1. Rust Stable バージョン
+          RUST_VER=$(curl -fsSL https://static.rust-lang.org/dist/channel-rust-stable.toml | grep -E '^# Rust ' | head -n1 | awk '{print $3}')
+
+          # 2. Lua 公式最新版 tarball 名
+          LUA_VER=$(curl -fsSL https://www.lua.org/ftp/ | grep -oE 'lua-[0-9]+\.[0-9]+\.[0-9]+\.tar\.gz' | sort -V | tail -n 1)
+
+          # 3. LuaJIT (v2.1 ブランチの HEAD コミットSHA)
+          LUAJIT_HASH=$(git ls-remote https://github.com/LuaJIT/LuaJIT.git refs/heads/v2.1 | awk '{print $1}')
+
+          # 4. LuaRocks 最新タグ (API制限回避: リダイレクト先URLより取得)
+          LUAROCKS_VER=$(curl -fsSL -o /dev/null -w "%{url_effective}" https://github.com/luarocks/luarocks/releases/latest | sed 's|.*/v\?||')
+
+          # 5. OpenCode 最新リリース (API制限回避: リダイレクト先URLより取得)
+          OPENCODE_VER=$(curl -fsSL -o /dev/null -w "%{url_effective}" https://github.com/anomalyco/opencode/releases/latest | sed 's|.*/v\?||')
+
+          # 6. Python パッケージ群の最新バージョン (PyPI JSON API)
+          BROWSER_USE_VER=$(curl -fsSL https://pypi.org/pypi/browser-use/json | jq -r '.info.version')
+          SEMGREP_VER=$(curl -fsSL https://pypi.org/pypi/semgrep/json | jq -r '.info.version')
+          CODE_REVIEW_VER=$(curl -fsSL https://pypi.org/pypi/open-code-review/json | jq -r '.info.version')
+          CODEBASE_MCP_VER=$(curl -fsSL https://pypi.org/pypi/codebase-memory-mcp/json | jq -r '.info.version')
+
+          STATE_SUMMARY=$(cat <<EOF
+          base_image:${BASE_DIGEST}
+          rust:${RUST_VER}
+          lua:${LUA_VER}
+          luajit:${LUAJIT_HASH}
+          luarocks:${LUAROCKS_VER}
+          opencode:${OPENCODE_VER}
+          browser-use:${BROWSER_USE_VER}
+          semgrep:${SEMGREP_VER}
+          open-code-review:${CODE_REVIEW_VER}
+          codebase-memory-mcp:${CODEBASE_MCP_VER}
+          EOF
+          )
+
+          echo "=== Desired Dependencies State ==="
+          echo "${STATE_SUMMARY}"
+
+          STATE_HASH=$(echo "${STATE_SUMMARY}" | sha256sum | awk '{print $1}')
+          echo "state_hash=${STATE_HASH}" >> "$GITHUB_OUTPUT"
+
+      # ============================================================
+      # Step 3: 現在 GHCR にある自作イメージの OCI Label を取得
+      # ============================================================
+      - name: Resolve current published image hash
+        id: current
+        env:
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          TOKEN=$(curl -fsSL "https://ghcr.io/token?scope=repository:${OWNER}/${IMAGE_NAME}:pull" | jq -r '.token')
+
+          INDEX_JSON=$(curl -fsSL \
+            -H "Authorization: Bearer ${TOKEN}" \
+            -H "Accept: application/vnd.oci.image.index.v1+json" \
+            "https://ghcr.io/v2/${OWNER}/${IMAGE_NAME}/manifests/latest") || true
+
+          if [ -z "${INDEX_JSON}" ]; then
+            echo "current_hash=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          AMD64_DIGEST=$(echo "${INDEX_JSON}" | jq -r '
+            if .manifests then
+              .manifests[] | select(.platform.architecture=="amd64") | .digest
+            else
+              .config.digest // empty
+            end
+          ' | head -n1)
+
+          if [ -z "${AMD64_DIGEST}" ]; then
+            echo "current_hash=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          MANIFEST_JSON=$(curl -fsSL \
+            -H "Authorization: Bearer ${TOKEN}" \
+            -H "Accept: application/vnd.oci.image.manifest.v1+json" \
+            "https://ghcr.io/v2/${OWNER}/${IMAGE_NAME}/manifests/${AMD64_DIGEST}")
+
+          CONFIG_DIGEST=$(echo "${MANIFEST_JSON}" | jq -r '.config.digest // empty')
+
+          if [ -z "${CONFIG_DIGEST}" ]; then
+            echo "current_hash=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          CONFIG_JSON=$(curl -fsSL \
+            -H "Authorization: Bearer ${TOKEN}" \
+            "https://ghcr.io/v2/${OWNER}/${IMAGE_NAME}/blobs/${CONFIG_DIGEST}")
+
+          CURRENT_HASH=$(echo "${CONFIG_JSON}" | jq -r '
+            .config.Labels["custom.dependencies.hash"] // empty
+          ')
+
+          echo "Current Published Hash: ${CURRENT_HASH}"
+          echo "current_hash=${CURRENT_HASH}" >> "$GITHUB_OUTPUT"
+
+      # ============================================================
+      # Step 4: ハッシュ突合 (差分比較)
+      # ============================================================
+      - name: Compare desired state
+        id: compare
+        run: |
+          CURRENT="${{ steps.current.outputs.current_hash }}"
+          DESIRED="${{ steps.deps.outputs.state_hash }}"
+
+          echo "Current : ${CURRENT}"
+          echo "Desired : ${DESIRED}"
+
+          if [ -n "${CURRENT}" ] && [ "${CURRENT}" = "${DESIRED}" ]; then
+            echo "All dependencies and base image are up-to-date. Skipping build."
+            echo "should_build=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Update detected. Triggering build."
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  build:
+    needs: determine
+    if: needs.determine.outputs.should_build == 'true'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Setup Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      # ============================================================
+      # Step 8: OCI Metadata (State Hash を Label に保存)
+      # ============================================================
+      - name: Generate metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=latest
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            custom.dependencies.hash=${{ needs.determine.outputs.desired_hash }}
+
+      # ============================================================
+      # Step 9: Multi-Arch Build & Push
+      # ============================================================
+      - name: Build and push
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          platforms: |
+            linux/amd64
+            linux/arm64
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+      - name: Show digest
+        run: |
+          echo "Digest: ${{ steps.build.outputs.digest }}"
