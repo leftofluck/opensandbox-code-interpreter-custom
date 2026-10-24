@@ -85,18 +85,19 @@ RUN set -euo pipefail && \
         uv pip install --python "$py_bin" "${packages[@]}" || echo "Skipping package install for $py_bin due to compatibility"; \
     done
 
-# 各ツールの CLI バイナリをシステム共通の /usr/local/bin にリンク
-RUN DEFAULT_PY_BIN=$(ls -d /opt/python/versions/cpython-3.12*/bin | head -n 1) && \
+# 各ツールの CLI バイナリを /usr/local/bin に確実にリンク
+RUN DEFAULT_BIN_DIR=$(ls -d /opt/python/versions/cpython-3.12*/bin | head -n 1) && \
     for tool in semgrep open-code-review ocr codebase-memory-mcp browser-use playwright; do \
-        if [ -f "${DEFAULT_PY_BIN}/${tool}" ]; then \
-            ln -sf "${DEFAULT_PY_BIN}/${tool}" "/usr/local/bin/${tool}"; \
+        if [ -x "${DEFAULT_BIN_DIR}/${tool}" ]; then \
+            ln -sf "${DEFAULT_BIN_DIR}/${tool}" "/usr/local/bin/${tool}"; \
         fi \
     done
 
-# 9. Browser Use 用 Chromium & 依存システムライブラリのインストール
-# （システム領域と /root/.cache/ms-playwright に配置されるため全バージョンで共有可能）
-RUN playwright install-deps chromium && \
-    playwright install chromium
+# 9. Browser Use 用 Chromium & 依存システムライブラリ
+# 安定版 Python 3.12 のバイナリを直接指定してモジュール経由で実行
+RUN PY_BIN=$(ls -d /opt/python/versions/cpython-3.12*/bin/python3 | head -n 1) && \
+    "$PY_BIN" -m playwright install-deps chromium && \
+    "$PY_BIN" -m playwright install chromium
 
 # 10. OpenCode の初期設定テンプレート (MCP サーバー定義)
 RUN mkdir -p /root/.config/opencode && \
