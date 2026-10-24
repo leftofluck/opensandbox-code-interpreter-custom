@@ -21,14 +21,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # 2. Rust, Cargo, Clippy, rustfmt (最新安定版)
-RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y \
-    --default-toolchain stable \
-    --profile minimal \
-    --component clippy rustfmt \
-    --no-modify-path \
-    && chmod -R a+w /usr/local/rustup /usr/local/cargo
+RUN mkdir -p /usr/local/rustup /usr/local/cargo && \
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y \
+        --default-toolchain stable \
+        --profile minimal \
+        --no-modify-path && \
+    /usr/local/cargo/bin/rustup component add clippy rustfmt && \
+    chmod -R a+w /usr/local/rustup /usr/local/cargo
 
-# 3. Lua (最新安定版動的ビルド)
+    # 3. Lua (最新安定版動的ビルド)
 RUN LUA_TARBALL=$(curl -fsSL https://www.lua.org/ftp/ | grep -oE 'lua-[0-9]+\.[0-9]+\.[0-9]+\.tar\.gz' | sort -V | tail -n 1) && \
     echo "Building Lua: ${LUA_TARBALL}" && \
     curl -fsSL "https://www.lua.org/ftp/${LUA_TARBALL}" -o /tmp/lua.tar.gz && \
