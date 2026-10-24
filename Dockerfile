@@ -77,16 +77,19 @@ RUN LUA_MAJOR_MINOR=$(lua -e 'print(_VERSION:match("%d+%.%d+"))') && \
 # 7. OpenCode (最新バイナリを /usr/local/bin に配置)
 RUN curl -fsSL https://raw.githubusercontent.com/anomalyco/opencode/main/install.sh | bash -s -- --dir /usr/local/bin
 
-# 8. Python パッケージ群 (uv を利用してシステム領域へインストール)
-RUN uv pip install --system --no-cache \
-    browser-use \
-    semgrep \
-    open-code-review \
-    codebase-memory-mcp
+# 8. Python パッケージ群
+# --no-cache ではなく --no-cache-dir を指定し、安定版 Python 3.12 に導入
+RUN . /opt/code-interpreter/code-interpreter-env.sh python 3.12 && \
+    uv pip install --system --no-cache-dir \
+        browser-use \
+        semgrep \
+        open-code-review \
+        codebase-memory-mcp
 
 # 9. Browser Use 用 Chromium & 依存システムライブラリ
-RUN playwright install-deps chromium \
-    && playwright install chromium
+RUN . /opt/code-interpreter/code-interpreter-env.sh python 3.12 && \
+    playwright install-deps chromium && \
+    playwright install chromium
 
 # 10. OpenCode の初期設定テンプレート (MCP サーバー定義)
 RUN mkdir -p /root/.config/opencode && \
