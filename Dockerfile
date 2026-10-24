@@ -77,13 +77,12 @@ RUN LUA_MAJOR_MINOR=$(lua -e 'print(_VERSION:match("%d+%.%d+"))') && \
 # 7. OpenCode (最新バイナリを /usr/local/bin に配置)
 RUN curl -fsSL https://raw.githubusercontent.com/anomalyco/opencode/main/install.sh | bash -s -- --dir /usr/local/bin
 
-# 8. Python パッケージ群
-RUN . /opt/code-interpreter/code-interpreter-env.sh python 3.12 && \
-    python3 -m pip install --no-cache-dir --break-system-packages \
-        browser-use \
-        semgrep \
-        open-code-review \
-        codebase-memory-mcp
+# 8. Python パッケージ群のインストール
+# uv の target python 指定機能を使って直接 /opt/python/versions 配下の Python 3.12 へ導入
+RUN uv pip install --python /opt/python/versions/cpython-3.12*-linux-*/bin/python3 browser-use && \
+    uv pip install --python /opt/python/versions/cpython-3.12*-linux-*/bin/python3 semgrep && \
+    uv pip install --python /opt/python/versions/cpython-3.12*-linux-*/bin/python3 open-code-review && \
+    uv pip install --python /opt/python/versions/cpython-3.12*-linux-*/bin/python3 codebase-memory-mcp
 
 # 9. Browser Use 用 Chromium & 依存システムライブラリ
 RUN . /opt/code-interpreter/code-interpreter-env.sh python 3.12 && \
