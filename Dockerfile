@@ -9,7 +9,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PATH=/usr/local/cargo/bin:$PATH \
     OPENCODE_CONFIG=/root/.config/opencode/opencode.json
 
-# 1. ビルドヘッダー、エージェント支援ツール、Xvfb、jq のインストール
+# 1. ビルドヘッダー、エージェント支援ツール、Xvfb、jq、Chromium 実行用ライブラリ
 RUN apt-get update && apt-get install -y --no-install-recommends \
     pkg-config \
     libssl-dev \
@@ -18,6 +18,22 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     xvfb \
     xauth \
     jq \
+    # Chromium 実行に必要なシステム共有ライブラリ
+    libnss3 \
+    libnspr4 \
+    libatk1.0-0 \
+    libatk-bridge2.0-0 \
+    libcups2 \
+    libdrm2 \
+    libxkbcommon0 \
+    libxcomposite1 \
+    libxdamage1 \
+    libxfixes3 \
+    libxrandr2 \
+    libgbm1 \
+    libasound2t64 \
+    fonts-liberation \
+    xdg-utils \
     && rm -rf /var/lib/apt/lists/*
 
 # 2. Rust, Cargo, Clippy, rustfmt (最新安定版)
@@ -94,10 +110,11 @@ RUN DEFAULT_BIN_DIR=$(ls -d /opt/python/versions/cpython-3.12*/bin | head -n 1) 
     done
 
 # 9. Browser Use 用 Chromium & 依存システムライブラリ
-# 安定版 Python 3.12 のバイナリを直接指定してモジュール経由で実行
-RUN PY_BIN=$(ls -d /opt/python/versions/cpython-3.12*/bin/python3 | head -n 1) && \
-    "$PY_BIN" -m playwright install-deps chromium && \
-    "$PY_BIN" -m playwright install chromium
+RUN apt-get update && \
+    PY_BIN=$(ls -d /opt/python/versions/cpython-3.12*/bin/python3 | head -n 1) && \
+    ("$PY_BIN" -m playwright install-deps chromium || true) && \
+    "$PY_BIN" -m playwright install chromium && \
+    rm -rf /var/lib/apt/lists/*
 
 # 10. OpenCode の初期設定テンプレート (MCP サーバー定義)
 RUN mkdir -p /root/.config/opencode && \
