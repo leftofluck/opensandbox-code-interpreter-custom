@@ -77,16 +77,25 @@ RUN LUA_MAJOR_MINOR=$(lua -e 'print(_VERSION:match("%d+%.%d+"))') && \
 # 7. OpenCode (最新バイナリを /usr/local/bin に配置)
 RUN curl -fsSL https://raw.githubusercontent.com/anomalyco/opencode/main/install.sh | bash -s -- --dir /usr/local/bin
 
-# 8. Python パッケージ群のインストール
-# uv の target python 指定機能を使って直接 /opt/python/versions 配下の Python 3.12 へ導入
-RUN uv pip install --python /opt/python/versions/cpython-3.12*-linux-*/bin/python3 browser-use && \
-    uv pip install --python /opt/python/versions/cpython-3.12*-linux-*/bin/python3 semgrep && \
-    uv pip install --python /opt/python/versions/cpython-3.12*-linux-*/bin/python3 open-code-review && \
-    uv pip install --python /opt/python/versions/cpython-3.12*-linux-*/bin/python3 codebase-memory-mcp
+# 8. 全 Python バージョンへのパッケージ群のインストール
+RUN set -euo pipefail && \
+    packages=(browser-use semgrep open-code-review codebase-memory-mcp playwright) && \
+    for py_bin in /opt/python/versions/cpython-*/bin/python3; do \
+        echo "Installing tools for: $py_bin" && \
+        uv pip install --python "$py_bin" "${packages[@]}" || echo "Skipping package install for $py_bin due to compatibility"; \
+    done
 
-# 9. Browser Use 用 Chromium & 依存システムライブラリ
-RUN . /opt/code-interpreter/code-interpreter-env.sh python 3.12 && \
-    playwright install-deps chromium && \
+# 各ツールの CLI バイナリをシステム共通の /usr/local/bin にリンク
+RUN DEFAULT_PY_BIN=$(ls -d /opt/python/versions/cpython-3.12*/bin | head -n 1) && \
+    for tool in semgrep open-code-review ocr codebase-memory-mcp browser-use playwright; do \
+        if [ -f "${DEFAULT_PY_BIN}/${tool}" ]; then \
+            ln -sf "${DEFAULT_PY_BIN}/${tool}" "/usr/local/bin/${tool}"; \
+        fi \
+    done
+
+# 9. Browser Use 用 Chromium & 依存システムライブラリのインストール
+# （システム領域と /root/.cache/ms-playwright に配置されるため全バージョンで共有可能）
+RUN playwright install-deps chromium && \
     playwright install chromium
 
 # 10. OpenCode の初期設定テンプレート (MCP サーバー定義)
