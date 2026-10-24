@@ -78,9 +78,8 @@ RUN LUA_MAJOR_MINOR=$(lua -e 'print(_VERSION:match("%d+%.%d+"))') && \
 RUN curl -fsSL https://raw.githubusercontent.com/anomalyco/opencode/main/install.sh | bash -s -- --dir /usr/local/bin
 
 # 8. Python パッケージ群
-# --no-cache ではなく --no-cache-dir を指定し、安定版 Python 3.12 に導入
 RUN . /opt/code-interpreter/code-interpreter-env.sh python 3.12 && \
-    uv pip install --system --no-cache-dir \
+    python3 -m pip install --no-cache-dir --break-system-packages \
         browser-use \
         semgrep \
         open-code-review \
