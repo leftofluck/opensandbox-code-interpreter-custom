@@ -25,24 +25,26 @@ https://github.com/opensandbox-group/sandbox-images の opensandbox/code-interpr
 ## 特記事項
 
 ### 1. 動的最新版追従と自動ビルド
-- **最新版の動的解決**: 固定バージョンをハードコードせず、Lua/LuaRocks のソースビルド、Rust 安定版、PyPI パッケージをビルド時点の最新バージョンで解決します。
-- **無駄ビルドの抑止**: GitHub Actions（`.github/workflows/build.yml`）が 6 時間ごとにベースイメージおよび各コンポーネントの最新状態をチェックし、ハッシュ値に差分が生じた場合のみマルチアーキテクチャ（amd64 / arm64）イメージの再ビルドを行います。
-- **GitHub API レート制限回避**: バージョン取得処理は HTTP リダイレクトヘッダーや PyPI/FTP インデックスを利用し、未認証トークン制限によるビルド失敗を防ぎます。
+- **最新版の動的解決**: 固定バージョンをハードコードせず、Lua / LuaRocks のソースビルド、Rust 安定版、PyPI パッケージ、npm パッケージをビルド時点の最新バージョンで解決・構築します。
+- **マルチランタイム対応**: ベースイメージに同梱されているすべての Python バージョン（`/opt/python/versions/cpython-*`）および Node.js バージョン（`/opt/node/v*`）に対してツール群をインストールし、最新バージョンのバイナリを `/usr/local/bin` へシンボリックリンク配置します。
+- **無駄ビルドの抑止**: GitHub Actions（`.github/workflows/build.yml`）が定期的にベースイメージおよび各コンポーネントの最新状態をチェックし、ハッシュ値に差分が生じた場合のみマルチアーキテクチャ（amd64 / arm64）イメージの再ビルドを行います。
+- **API レート制限回避**: バージョン取得処理は HTTP リダイレクトヘッダーやインデックスページを利用し、未認証トークン制限によるビルド失敗を防ぎます。
 
 ### 2. 実行アーキテクチャ & 常駐プロセス
-コンテナ起動時、カスタムエントリポイントによって以下のデーモン・サーバーが自動常駐し、元のベースイメージ機能（Jupyter/Code Interpreter）も並行して維持されます。
+コンテナ起動時、カスタムエントリポイント（`/usr/local/bin/custom-entrypoint.sh`）によって各サービスの自動設定およびデーモンが起動し、ベースイメージ本来の機能（Jupyter/Code Interpreter）も並行して維持されます。
 
-| サービス | ポート | 種別 / 用途 |
+| サービス / ツール | ポート | 種別 / 用途 |
 |---|---|---|
-| **OpenCode** | `4096` | REST API サーバー（`opencode serve --port 4096 --hostname 0.0.0.0`） |
-| **Semgrep** | `8000` | Streamable HTTP MCP サーバー（`semgrep mcp --transport streamable-http`） |
-| **Jupyter Server** | `44771` | ベースイメージの Jupyter カーネルデーモン |
+| **OpenCode** | `4096` | バックグラウンド常駐（`opencode serve --port 4096 --hostname 0.0.0.0`） |
+| **Semgrep** | `8000` | Streamable HTTP MCP サーバーとしてバックグラウンド常駐（`semgrep mcp --transport streamable-http --port 8000`） |
+| **Jupyter Server** | `44771` | ベースイメージの Code Interpreter デーモン（`/opt/code-interpreter/code-interpreter.sh`） |
 | **codebase-memory-mcp** | - | OpenCode の `local` (stdio) MCP ツールとして事前設定済み |
-| **OpenCodeReview** | - | オンデマンド CLI（`ocr` コマンドで実行） |
-| **Browser Use** | - | Playwright / Chromium 同梱（Xvfb 対応でヘッドレス/GUI 実行可能） |
+| **OpenCodeReview** | - | オンデマンド CLI（`ocr` / `open-code-review` コマンドで実行） |
+| **Browser Use** | - | Playwright / Chromium 同梱（Xvfb / ヘッドレス実行対応、`PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH` 設定済み） |
 
-### 3. OpenCode の MCP 設定
-コンテナ内の `/root/.config/opencode/opencode.json` にて、常駐する Semgrep MCP サーバーおよび codebase-memory-mcp があらかじめ登録されています。
+### 3. OpenCode の初期設定 (MCP 構成)
+コンテナ内の `/root/.config/opencode/opencode.json` にて、常駐する Semgrep MCP サーバーおよび codebase-memory-mcp があらかじめ登録されています。起動時に環境変数が指定された場合、LLM プロバイダ設定が同ファイルへ動的にマージされます。
+
 ```json
 {
   "$schema": "https://opencode.ai/config.json",
@@ -64,21 +66,26 @@ https://github.com/opensandbox-group/sandbox-images の opensandbox/code-interpr
 ## 起動方法 & 設定
 
 ### 環境変数 (LLM 接続情報)
-セルフホスト LLM サーバー等のエンドポイントやモデル名は、コンテナ起動時の環境変数経由で動的に設定されます。
+コンテナ起動時に以下の環境変数を渡すことで、OpenCode、OpenCodeReview、Browser Use の接続先が自動構成されます。
 
 | 環境変数 | 説明 | デフォルト値 |
 |---|---|---|
-| `LLM_BASE_URL` | LLM サーバーの Base URL (OpenCode & OpenCodeReview 共通) | なし |
-| `LLM_MODEL` | 使用するモデル名 (共通) | `default-model` |
+| `LLM_BASE_URL` | LLM サーバーの Base URL（全ツール共通フォールバック） | なし |
+| `LLM_MODEL` | 使用するモデル名（全ツール共通フォールバック） | `default-model` |
 | `OPENCODE_BASE_URL` | OpenCode 専用の Base URL 上書き | `${LLM_BASE_URL}` |
 | `OPENCODE_MODEL` | OpenCode 専用のモデル名上書き | `${LLM_MODEL}` |
+| `OPENCODE_PROVIDER` | OpenCode のプロバイダ識別子 | `selfhosted` |
 | `OCR_BASE_URL` | OpenCodeReview 専用の Base URL 上書き | `${LLM_BASE_URL}` |
 | `OCR_MODEL` | OpenCodeReview 専用のモデル名上書き | `${LLM_MODEL}` |
+| `OCR_PROVIDER` | OpenCodeReview のプロバイダ識別子 | `custom-selfhosted` |
+| `BROWSER_USE_BASE_URL` | Browser Use 向け Base URL（`OPENAI_API_BASE` に設定） | `${LLM_BASE_URL}` |
+| `BROWSER_USE_MODEL` | Browser Use 向けモデル名 | `${LLM_MODEL}` |
+| `BROWSER_USE_API_KEY` | Browser Use 向け API キー | `vault-managed-key`（未指定時） |
 
 ### セキュリティ: OpenSandbox Credential Vault との連携
-エージェントによるプロンプトインジェクションやシェル操作から本物の API キー漏洩を防ぐため、**コンテナ内部の設定ファイルには本物のトークンを永続化せず、ダミートークン（`vault-managed-key`）を自動設定します。**
+エージェントによるプロンプトインジェクションやシェル操作を通じた実 API キーの漏洩を防ぐため、**コンテナ内部の設定ファイルや環境変数には実際のトークンを永続化せず、ダミートークン（`vault-managed-key`）を自動設定します。**
 
-本物の認証キーは OpenSandbox の [Credential Vault](https://open-sandbox.ai/guides/credential-vault)（Egress Sidecar）で透過的に差し替えて運用することを推奨します。
+実際の認証キーは OpenSandbox の [Credential Vault](https://open-sandbox.ai/guides/credential-vault)（Egress Sidecar）で透過的に差し替えて運用することを推奨します。
 
 #### OpenSandbox SDK での利用例 (Python)
 ```python
