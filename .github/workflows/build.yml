@@ -68,27 +68,31 @@ jobs:
         run: |
           BASE_DIGEST="${{ steps.upstream.outputs.digest }}"
 
-          # 1. Rust Stable バージョン (toml 内の [pkg.rust] version = "X.Y.Z" から確実に抽出)
-          RUST_VER=$(curl -fsSL https://static.rust-lang.org/dist/channel-rust-stable.toml | sed -n 's/^version = "\([^ "]*\).*/\1/p' | head -n 1)
+          # 1. Rust Stable バージョン (Rust 本体コンパイラの正確なバージョンを取得)
+          RUST_VER=$(curl -fsSL https://static.rust-lang.org/dist/channel-rust-stable.toml | sed -n '/\[pkg\.rust\]/,/\[/p' | sed -n 's/^version = "\([^ "]*\).*/\1/p' | head -n 1)
 
-          # 2. Lua 公式最新版 tarball 名
+          # 2. Lua
           LUA_VER=$(curl -fsSL https://www.lua.org/ftp/ | grep -oE 'lua-[0-9]+\.[0-9]+\.[0-9]+\.tar\.gz' | sort -V | tail -n 1)
 
-          # 3. LuaJIT (デフォルトブランチ HEAD コミットSHA)
+          # 3. LuaJIT
           LUAJIT_HASH=$(git ls-remote https://github.com/LuaJIT/LuaJIT.git HEAD | awk '{print $1}')
 
-          # 4. LuaRocks: 最新リリースタグ + そのタグが指す Commit SHA
+          # 4. LuaRocks
           LUAROCKS_VER=$(curl -fsSL -o /dev/null -w "%{url_effective}" https://github.com/luarocks/luarocks/releases/latest | sed 's|.*/v\?||')
           LUAROCKS_SHA=$(git ls-remote --tags https://github.com/luarocks/luarocks.git "refs/tags/v${LUAROCKS_VER}*" | sort -k2 | tail -n1 | awk '{print $1}')
 
-          # 5. OpenCode: 最新リリース + Commit SHA
+          # 5. OpenCode
           OPENCODE_VER=$(curl -fsSL -o /dev/null -w "%{url_effective}" https://github.com/anomalyco/opencode/releases/latest | sed 's|.*/v\?||')
           OPENCODE_SHA=$(git ls-remote --tags https://github.com/anomalyco/opencode.git "refs/tags/v${OPENCODE_VER}*" | sort -k2 | tail -n1 | awk '{print $1}')
 
-          # 6. Python パッケージ群の最新バージョン (リダイレクトを考慮し -L を付与)
+          # 6. Python パッケージ群 (open-code-review はアンダースコアで取得)
           BROWSER_USE_VER=$(curl -fsSL https://pypi.org/pypi/browser-use/json | jq -r '.info.version // empty')
           SEMGREP_VER=$(curl -fsSL https://pypi.org/pypi/semgrep/json | jq -r '.info.version // empty')
           CODE_REVIEW_VER=$(curl -fsSL https://pypi.org/pypi/open-code-review/json | jq -r '.info.version // empty')
+          if [ -z "${CODE_REVIEW_VER}" ]; then
+            # アンダースコア側でフォールバック取得
+            CODE_REVIEW_VER=$(curl -fsSL https://pypi.org/pypi/open_code_review/json | jq -r '.info.version // empty')
+          fi
           CODEBASE_MCP_VER=$(curl -fsSL https://pypi.org/pypi/codebase-memory-mcp/json | jq -r '.info.version // empty')
 
           # 取得値のデバッグ出力
@@ -241,9 +245,6 @@ jobs:
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             custom.dependencies.hash=${{ needs.determine.outputs.desired_hash }}
             custom.packages.info=${{ needs.determine.outputs.pkg_description }}
-          annotations: |
-            org.opencontainers.image.description=Built with: ${{ needs.determine.outputs.pkg_description }}
-            index:org.opencontainers.image.description=Built with: ${{ needs.determine.outputs.pkg_description }}
 
       # ============================================================
       # Step 9: Multi-Arch Build & Push
@@ -263,7 +264,8 @@ jobs:
           provenance: false
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          annotations: ${{ steps.meta.outputs.annotations }}
+          annotations: |
+            index,manifest:org.opencontainers.image.description=Built with: ${{ needs.determine.outputs.pkg_description }}
 
       - name: Show digest
         run: |
