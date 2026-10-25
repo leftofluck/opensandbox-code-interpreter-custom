@@ -68,8 +68,8 @@ jobs:
         run: |
           BASE_DIGEST="${{ steps.upstream.outputs.digest }}"
 
-          # 1. Rust Stable バージョン
-          RUST_VER=$(curl -fsSL https://static.rust-lang.org/dist/channel-rust-stable.toml | grep -E '^# Rust ' | head -n1 | awk '{print $3}')
+          # 1. Rust Stable バージョン (toml 内の [pkg.rust] version = "X.Y.Z" から確実に抽出)
+          RUST_VER=$(curl -fsSL https://static.rust-lang.org/dist/channel-rust-stable.toml | sed -n 's/^version = "\([^ "]*\).*/\1/p' | head -n 1)
 
           # 2. Lua 公式最新版 tarball 名
           LUA_VER=$(curl -fsSL https://www.lua.org/ftp/ | grep -oE 'lua-[0-9]+\.[0-9]+\.[0-9]+\.tar\.gz' | sort -V | tail -n 1)
@@ -85,11 +85,15 @@ jobs:
           OPENCODE_VER=$(curl -fsSL -o /dev/null -w "%{url_effective}" https://github.com/anomalyco/opencode/releases/latest | sed 's|.*/v\?||')
           OPENCODE_SHA=$(git ls-remote --tags https://github.com/anomalyco/opencode.git "refs/tags/v${OPENCODE_VER}*" | sort -k2 | tail -n1 | awk '{print $1}')
 
-          # 6. Python パッケージ群の最新バージョン (PyPI JSON API)
-          BROWSER_USE_VER=$(curl -fsSL https://pypi.org/pypi/browser-use/json | jq -r '.info.version')
-          SEMGREP_VER=$(curl -fsSL https://pypi.org/pypi/semgrep/json | jq -r '.info.version')
-          CODE_REVIEW_VER=$(curl -fsSL https://pypi.org/pypi/open-code-review/json | jq -r '.info.version')
-          CODEBASE_MCP_VER=$(curl -fsSL https://pypi.org/pypi/codebase-memory-mcp/json | jq -r '.info.version')
+          # 6. Python パッケージ群の最新バージョン (リダイレクトを考慮し -L を付与)
+          BROWSER_USE_VER=$(curl -fsSL https://pypi.org/pypi/browser-use/json | jq -r '.info.version // empty')
+          SEMGREP_VER=$(curl -fsSL https://pypi.org/pypi/semgrep/json | jq -r '.info.version // empty')
+          CODE_REVIEW_VER=$(curl -fsSL https://pypi.org/pypi/open-code-review/json | jq -r '.info.version // empty')
+          CODEBASE_MCP_VER=$(curl -fsSL https://pypi.org/pypi/codebase-memory-mcp/json | jq -r '.info.version // empty')
+
+          # 取得値のデバッグ出力
+          echo "Resolved Rust: ${RUST_VER}"
+          echo "Resolved OpenCodeReview: ${CODE_REVIEW_VER}"
 
           # 状態判定用サマリー
           STATE_SUMMARY=$(cat <<EOF
@@ -112,11 +116,11 @@ jobs:
           STATE_HASH=$(echo "${STATE_SUMMARY}" | sha256sum | awk '{print $1}')
           echo "state_hash=${STATE_HASH}" >> "$GITHUB_OUTPUT"
 
-          # 1. バージョンタグ (vYYYYMMDDHH)
-          VERSION_TAG=$(date -u +v%Y%m%d%H)
+          # 1. バージョンタグ (vYYYYMMDDHHMMSS: UTC基準)
+          VERSION_TAG=$(date -u +v%Y%m%d%H%M%S)
           echo "version_tag=${VERSION_TAG}" >> "$GITHUB_OUTPUT"
 
-          # 3. イメージ説明ラベル用テキスト
+          # 2. イメージ説明ラベル用テキスト
           PKG_DESC="rust=${RUST_VER}, lua=${LUA_VER}, luajit=${LUAJIT_HASH:0:7}, luarocks=${LUAROCKS_VER}, opencode=${OPENCODE_VER}, browser-use=${BROWSER_USE_VER}, semgrep=${SEMGREP_VER}, open-code-review=${CODE_REVIEW_VER}, codebase-memory-mcp=${CODEBASE_MCP_VER}"
           echo "pkg_description=${PKG_DESC}" >> "$GITHUB_OUTPUT"
 
@@ -223,7 +227,7 @@ jobs:
           password: ${{ github.token }}
 
       # ============================================================
-      # Step 8: OCI Metadata (タグ・ラベル・アノテーション生成)
+      # Step 8: OCI Metadata
       # ============================================================
       - name: Generate metadata
         id: meta
@@ -256,6 +260,7 @@ jobs:
             linux/arm64
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          provenance: false
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           annotations: ${{ steps.meta.outputs.annotations }}
