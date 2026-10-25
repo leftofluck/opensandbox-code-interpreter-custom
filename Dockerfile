@@ -81,26 +81,21 @@ RUN LUA_MAJOR_MINOR=$(lua -e 'print(_VERSION:match("%d+%.%d+"))') && \
 RUN curl -fsSL https://raw.githubusercontent.com/anomalyco/opencode/main/install.sh | bash -s -- --dir /usr/local/bin
 
 # 8. OpenCodeReview (全 Node.js バージョンへの動的グローバルインストール)
-RUN bash -c 'set -euo pipefail && \
+RUN set -euo pipefail && \
     for node_dir in /opt/node/v*; do \
-        if [ -d "${node_dir}" ]; then \
-            # /opt/node/v22.2.0 から メジャー番号 "22" を抽出
-            raw_v=$(basename "${node_dir}" | sed "s/^v//") && \
-            major_v="${raw_v%%.*}" && \
-            echo "Installing open-code-review for Node.js ${raw_v} (major: ${major_v})" && \
-            source /opt/code-interpreter/code-interpreter-env.sh node "${major_v}" && \
-            npm install -g open-code-review; \
+        if [ -d "${node_dir}/bin" ]; then \
+            echo "Installing open-code-review for $(basename "${node_dir}")" && \
+            PATH="${node_dir}/bin:${PATH}" "${node_dir}/bin/npm" install -g open-code-review || echo "Skipping $(basename "${node_dir}") due to compatibility"; \
         fi \
     done && \
-    # 最新（バージョン番号ソートで末尾）の Node.js から /usr/local/bin へ CLI をリンク
+    # 最新バージョンの Node.js から /usr/local/bin へ CLI をリンク
     latest_dir=$(ls -d /opt/node/v* | sort -V | tail -n 1) && \
-    latest_npm="${latest_dir}/bin/npm" && \
-    node_bin_dir=$(dirname "${latest_npm}") && \
+    node_bin_dir="${latest_dir}/bin" && \
     for bin in ocr open-code-review; do \
         if [ -e "${node_bin_dir}/${bin}" ]; then \
             ln -sf "${node_bin_dir}/${bin}" "/usr/local/bin/${bin}"; \
         fi \
-    done'
+    done
 
 # 9. 全 Python バージョンへのパッケージ群のインストール (open-code-review を除外)
 RUN set -euo pipefail && \
