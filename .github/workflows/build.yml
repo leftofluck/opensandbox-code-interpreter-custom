@@ -30,9 +30,9 @@ jobs:
 
     steps:
       # ============================================================
-      # Step 1: Upstream (Docker Hub) の latest digest を取得
+      # Step 1: Upstream (Docker Hub) の latest digest & version 解決
       # ============================================================
-      - name: Resolve upstream Docker Hub digest
+      - name: Resolve upstream Docker Hub digest & version
         id: upstream
         run: |
           TOKEN=$(curl -fsSL "https://auth.docker.io/token?service=registry.docker.io&scope=repository:${UPSTREAM_IMAGE}:pull" | jq -r '.token')
@@ -60,6 +60,31 @@ jobs:
           echo "Base image digest: ${AMD64_DIGEST}"
           echo "digest=${AMD64_DIGEST}" >> "$GITHUB_OUTPUT"
 
+          # Upstream の config blob からバージョンラベルの取得を試みる
+          BASE_MANIFEST_JSON=$(curl -fsSL \
+            -H "Authorization: Bearer ${TOKEN}" \
+            -H "Accept: application/vnd.docker.distribution.manifest.v2+json, application/vnd.oci.image.manifest.v1+json" \
+            "https://registry-1.docker.io/v2/${UPSTREAM_IMAGE}/manifests/${AMD64_DIGEST}")
+
+          CONFIG_DIGEST=$(echo "${BASE_MANIFEST_JSON}" | jq -r '.config.digest // empty')
+          BASE_VER=""
+          if [ -n "${CONFIG_DIGEST}" ]; then
+            CONFIG_JSON=$(curl -fsSL \
+              -H "Authorization: Bearer ${TOKEN}" \
+              "https://registry-1.docker.io/v2/${UPSTREAM_IMAGE}/blobs/${CONFIG_DIGEST}")
+            BASE_VER=$(echo "${CONFIG_JSON}" | jq -r '
+              .config.Labels["org.opencontainers.image.version"] //
+              .config.Labels["version"] // empty
+            ')
+          fi
+
+          # ラベルにバージョンがない場合は短縮ダイジェスト (sha256:xxxx の xxxx部分12文字) を使用
+          if [ -z "${BASE_VER}" ]; then
+            BASE_VER="${AMD64_DIGEST:7:12}"
+          fi
+          echo "Base image version: ${BASE_VER}"
+          echo "base_version=${BASE_VER}" >> "$GITHUB_OUTPUT"
+
       # ============================================================
       # Step 2: タグのコミットSHAおよび各ツールの実態を解決
       # ============================================================
@@ -67,6 +92,7 @@ jobs:
         id: deps
         run: |
           BASE_DIGEST="${{ steps.upstream.outputs.digest }}"
+          BASE_VER="${{ steps.upstream.outputs.base_version }}"
 
           # 1. Rust Stable バージョン (Rust 本体コンパイラの正確なバージョンを取得)
           RUST_VER=$(curl -fsSL https://static.rust-lang.org/dist/channel-rust-stable.toml | sed -n '/\[pkg\.rust\]/,/\[/p' | sed -n 's/^version = "\([^ "]*\).*/\1/p' | head -n 1)
@@ -89,7 +115,6 @@ jobs:
           OCR_REPO="alibaba/open-code-review"
           CODE_REVIEW_VER=$(curl -fsSL "https://registry.npmjs.org/@alibaba/open-code-review/latest" | jq -r '.version // empty')
           if [ -z "${CODE_REVIEW_VER}" ]; then
-            # npm スコープなし または GitHub リリースからのフォールバック
             CODE_REVIEW_VER=$(curl -fsSL "https://registry.npmjs.org/open-code-review/latest" | jq -r '.version // empty')
           fi
           if [ -z "${CODE_REVIEW_VER}" ]; then
@@ -130,8 +155,8 @@ jobs:
           VERSION_TAG=$(date -u +v%Y%m%d%H%M%S)
           echo "version_tag=${VERSION_TAG}" >> "$GITHUB_OUTPUT"
 
-          # 2. イメージ説明ラベル用テキスト
-          PKG_DESC="rust=${RUST_VER}, lua=${LUA_VER}, luajit=${LUAJIT_HASH:0:7}, luarocks=${LUAROCKS_VER}, opencode=${OPENCODE_VER}, browser-use=${BROWSER_USE_VER}, semgrep=${SEMGREP_VER}, open-code-review=${CODE_REVIEW_VER}, codebase-memory-mcp=${CODEBASE_MCP_VER}"
+          # 2. イメージ説明ラベル用テキスト (ベースイメージ情報を先頭に追加)
+          PKG_DESC="code-interpreter=${BASE_VER}, rust=${RUST_VER}, lua=${LUA_VER}, luajit=${LUAJIT_HASH:0:7}, luarocks=${LUAROCKS_VER}, opencode=${OPENCODE_VER}, browser-use=${BROWSER_USE_VER}, semgrep=${SEMGREP_VER}, open-code-review=${CODE_REVIEW_VER}, codebase-memory-mcp=${CODEBASE_MCP_VER}"
           echo "pkg_description=${PKG_DESC}" >> "$GITHUB_OUTPUT"
 
       # ============================================================
