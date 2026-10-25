@@ -23,13 +23,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     fonts-liberation \
     && rm -rf /var/lib/apt/lists/*
 
-# 4. LuaJIT (デフォルトブランチ動的ビルド)
-RUN git clone --depth 1 https://github.com/LuaJIT/LuaJIT.git /tmp/luajit && \
-    cd /tmp/luajit && \
-    make && \
-    make install PREFIX=/usr/local && \
-    ln -sf /usr/local/bin/luajit-* /usr/local/bin/luajit && \
-    rm -rf /tmp/luajit
+# 2. Rust, Cargo, Clippy, rustfmt (最新安定版)
+RUN mkdir -p /usr/local/rustup /usr/local/cargo && \
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y \
+        --default-toolchain stable \
+        --profile minimal \
+        --no-modify-path && \
+    /usr/local/cargo/bin/rustup component add clippy rustfmt && \
+    chmod -R a+w /usr/local/rustup /usr/local/cargo
 
 # 3. Lua (最新安定版動的ビルド)
 RUN LUA_TARBALL=$(curl -fsSL https://www.lua.org/ftp/ | grep -oE 'lua-[0-9]+\.[0-9]+\.[0-9]+\.tar\.gz' | sort -V | tail -n 1) && \
@@ -42,8 +43,8 @@ RUN LUA_TARBALL=$(curl -fsSL https://www.lua.org/ftp/ | grep -oE 'lua-[0-9]+\.[0
     make install INSTALL_TOP=/usr/local && \
     rm -rf /tmp/lua*
 
-# 4. LuaJIT (最新安定ブランチ v2.1)
-RUN git clone --depth 1 --branch v2.1 https://github.com/LuaJIT/LuaJIT.git /tmp/luajit && \
+# 4. LuaJIT (デフォルトブランチ動的ビルド)
+RUN git clone --depth 1 https://github.com/LuaJIT/LuaJIT.git /tmp/luajit && \
     cd /tmp/luajit && \
     make && \
     make install PREFIX=/usr/local && \
@@ -79,27 +80,49 @@ RUN LUA_MAJOR_MINOR=$(lua -e 'print(_VERSION:match("%d+%.%d+"))') && \
 # 7. OpenCode (最新バイナリを /usr/local/bin に配置)
 RUN curl -fsSL https://raw.githubusercontent.com/anomalyco/opencode/main/install.sh | bash -s -- --dir /usr/local/bin
 
-# 8. 全 Python バージョンへのパッケージ群のインストール
+# 8. OpenCodeReview (全 Node.js バージョンへの動的グローバルインストール)
+RUN bash -c 'set -euo pipefail && \
+    for node_dir in /opt/node/v*; do \
+        if [ -d "${node_dir}" ]; then \
+            # /opt/node/v22.2.0 から メジャー番号 "22" を抽出
+            raw_v=$(basename "${node_dir}" | sed "s/^v//") && \
+            major_v="${raw_v%%.*}" && \
+            echo "Installing open-code-review for Node.js ${raw_v} (major: ${major_v})" && \
+            source /opt/code-interpreter/code-interpreter-env.sh node "${major_v}" && \
+            npm install -g open-code-review; \
+        fi \
+    done && \
+    # 最新（バージョン番号ソートで末尾）の Node.js から /usr/local/bin へ CLI をリンク
+    latest_dir=$(ls -d /opt/node/v* | sort -V | tail -n 1) && \
+    latest_npm="${latest_dir}/bin/npm" && \
+    node_bin_dir=$(dirname "${latest_npm}") && \
+    for bin in ocr open-code-review; do \
+        if [ -e "${node_bin_dir}/${bin}" ]; then \
+            ln -sf "${node_bin_dir}/${bin}" "/usr/local/bin/${bin}"; \
+        fi \
+    done'
+
+# 9. 全 Python バージョンへのパッケージ群のインストール (open-code-review を除外)
 RUN set -euo pipefail && \
-    packages=(browser-use semgrep open-code-review codebase-memory-mcp playwright) && \
+    packages=(browser-use semgrep codebase-memory-mcp playwright) && \
     for py_bin in /opt/python/versions/cpython-*/bin/python3; do \
         echo "Installing tools for: $py_bin" && \
         uv pip install --python "$py_bin" "${packages[@]}" || echo "Skipping package install for $py_bin due to compatibility"; \
     done
 
-# 各ツールの CLI バイナリを /usr/local/bin に確実にリンク
-RUN DEFAULT_BIN_DIR=$(ls -d /opt/python/versions/cpython-3.12*/bin | head -n 1) && \
-    for tool in semgrep open-code-review ocr codebase-memory-mcp browser-use playwright; do \
-        if [ -x "${DEFAULT_BIN_DIR}/${tool}" ]; then \
-            ln -sf "${DEFAULT_BIN_DIR}/${tool}" "/usr/local/bin/${tool}"; \
+# 10. 各ツールの CLI バイナリを /usr/local/bin に確実にリンク (最新バージョンを動的選択)
+RUN LATEST_PY_BIN_DIR=$(ls -d /opt/python/versions/cpython-*/bin | sort -V | tail -n 1) && \
+    echo "Linking Python CLI tools from latest version: ${LATEST_PY_BIN_DIR}" && \
+    for tool in semgrep codebase-memory-mcp browser-use playwright; do \
+        if [ -x "${LATEST_PY_BIN_DIR}/${tool}" ]; then \
+            ln -sf "${LATEST_PY_BIN_DIR}/${tool}" "/usr/local/bin/${tool}"; \
         fi \
     done
 
-# 9. Browser Use / Playwright 用のブラウザ確認
-# APT 経由で導入した Chromium を使用するためダウンロード処理はスキップ
+# 11. Browser Use / Playwright 用のブラウザ確認
 RUN /usr/bin/chromium --version || echo "Chromium installed successfully"
 
-# 10. OpenCode の初期設定テンプレート (MCP サーバー定義)
+# 12. OpenCode の初期設定テンプレート (MCP サーバー定義)
 RUN mkdir -p /root/.config/opencode && \
     cat <<'EOF' > /root/.config/opencode/opencode.json
 {
@@ -117,15 +140,14 @@ RUN mkdir -p /root/.config/opencode && \
 }
 EOF
 
-# 11. 統合起動エントリポイントスクリプト (Vault前提: ダミートークンで設定構成)
+# 13. 統合起動エントリポイントスクリプト
 RUN cat <<'EOF' > /usr/local/bin/custom-entrypoint.sh
 #!/bin/bash
 set -e
 
-# 固定のダミーキー (本物の鍵は OpenSandbox Egress Sidecar 側で差し替える)
 DUMMY_KEY="vault-managed-key"
 
-# 11.1. OpenCode 設定 (モデル名とURLのみ注入、キーはダミー固定)
+# 13.1. OpenCode 設定 (モデル名とURLのみ注入、キーはダミー固定)
 OPENCODE_CFG="/root/.config/opencode/opencode.json"
 mkdir -p "$(dirname "${OPENCODE_CFG}")"
 
@@ -151,7 +173,7 @@ if [ -n "${OPENCODE_BASE_URL}" ] || [ -n "${OPENCODE_MODEL}" ] || [ -n "${LLM_BA
       ' "${OPENCODE_CFG}" > "${TMP_JSON}" && mv "${TMP_JSON}" "${OPENCODE_CFG}"
 fi
 
-# 11.2. OpenCodeReview 設定 (モデル名とURLのみ注入、キーはダミー固定)
+# 13.2. OpenCodeReview 設定
 OCR_CFG_DIR="/root/.opencodereview"
 OCR_CFG="${OCR_CFG_DIR}/config.json"
 mkdir -p "${OCR_CFG_DIR}"
@@ -183,17 +205,17 @@ if [ -n "${OCR_BASE_URL}" ] || [ -n "${LLM_BASE_URL}" ]; then
       ' "${OCR_CFG}" > "${TMP_OCR}" && mv "${TMP_OCR}" "${OCR_CFG}"
 fi
 
-# 11.3. Semgrep MCP サーバーの起動 (streamable-http)
+# 13.3. Semgrep MCP サーバーの起動 (streamable-http)
 if command -v semgrep >/dev/null 2>&1; then
     semgrep mcp --transport streamable-http --port 8000 &
 fi
 
-# 11.4. OpenCode serve の起動 (ポート 4096)
+# 13.4. OpenCode serve の起動 (ポート 4096)
 if command -v opencode >/dev/null 2>&1; then
     opencode serve --port 4096 --hostname 0.0.0.0 &
 fi
 
-# 11.5. Code Interpreter 元のエントリポイント実行
+# 13.5. Code Interpreter 元のエントリポイント実行
 exec /opt/code-interpreter/code-interpreter.sh "$@"
 EOF
 

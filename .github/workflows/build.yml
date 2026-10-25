@@ -81,23 +81,29 @@ jobs:
           LUAROCKS_VER=$(curl -fsSL -o /dev/null -w "%{url_effective}" https://github.com/luarocks/luarocks/releases/latest | sed 's|.*/v\?||')
           LUAROCKS_SHA=$(git ls-remote --tags https://github.com/luarocks/luarocks.git "refs/tags/v${LUAROCKS_VER}*" | sort -k2 | tail -n1 | awk '{print $1}')
 
-          # 5. OpenCode
+          # 5. OpenCode: 最新リリース + Commit SHA
           OPENCODE_VER=$(curl -fsSL -o /dev/null -w "%{url_effective}" https://github.com/anomalyco/opencode/releases/latest | sed 's|.*/v\?||')
           OPENCODE_SHA=$(git ls-remote --tags https://github.com/anomalyco/opencode.git "refs/tags/v${OPENCODE_VER}*" | sort -k2 | tail -n1 | awk '{print $1}')
 
-          # 6. Python パッケージ群 (open-code-review はアンダースコアで取得)
+          # 6. OpenCodeReview (Alibaba リポジトリのタグSHA + npm/GitHub最新バージョン)
+          OCR_REPO="alibaba/open-code-review"
+          CODE_REVIEW_VER=$(curl -fsSL "https://registry.npmjs.org/@alibaba/open-code-review/latest" | jq -r '.version // empty')
+          if [ -z "${CODE_REVIEW_VER}" ]; then
+            # npm スコープなし または GitHub リリースからのフォールバック
+            CODE_REVIEW_VER=$(curl -fsSL "https://registry.npmjs.org/open-code-review/latest" | jq -r '.version // empty')
+          fi
+          if [ -z "${CODE_REVIEW_VER}" ]; then
+            CODE_REVIEW_VER=$(curl -fsSL -o /dev/null -w "%{url_effective}" "https://github.com/${OCR_REPO}/releases/latest" | sed 's|.*/v\?||')
+          fi
+          CODE_REVIEW_SHA=$(git ls-remote --tags "https://github.com/${OCR_REPO}.git" "refs/tags/*${CODE_REVIEW_VER}*" | sort -k2 | tail -n1 | awk '{print $1}')
+          if [ -z "${CODE_REVIEW_SHA}" ]; then
+            CODE_REVIEW_SHA=$(git ls-remote "https://github.com/${OCR_REPO}.git" HEAD | awk '{print $1}')
+          fi
+
+          # 7. Python パッケージ群 (PyPI JSON API)
           BROWSER_USE_VER=$(curl -fsSL https://pypi.org/pypi/browser-use/json | jq -r '.info.version // empty')
           SEMGREP_VER=$(curl -fsSL https://pypi.org/pypi/semgrep/json | jq -r '.info.version // empty')
-          CODE_REVIEW_VER=$(curl -fsSL https://pypi.org/pypi/open-code-review/json | jq -r '.info.version // empty')
-          if [ -z "${CODE_REVIEW_VER}" ]; then
-            # アンダースコア側でフォールバック取得
-            CODE_REVIEW_VER=$(curl -fsSL https://pypi.org/pypi/open_code_review/json | jq -r '.info.version // empty')
-          fi
           CODEBASE_MCP_VER=$(curl -fsSL https://pypi.org/pypi/codebase-memory-mcp/json | jq -r '.info.version // empty')
-
-          # 取得値のデバッグ出力
-          echo "Resolved Rust: ${RUST_VER}"
-          echo "Resolved OpenCodeReview: ${CODE_REVIEW_VER}"
 
           # 状態判定用サマリー
           STATE_SUMMARY=$(cat <<EOF
@@ -107,9 +113,9 @@ jobs:
           luajit:${LUAJIT_HASH}
           luarocks:${LUAROCKS_VER}@${LUAROCKS_SHA}
           opencode:${OPENCODE_VER}@${OPENCODE_SHA}
+          open-code-review:${CODE_REVIEW_VER}@${CODE_REVIEW_SHA}
           browser-use:${BROWSER_USE_VER}
           semgrep:${SEMGREP_VER}
-          open-code-review:${CODE_REVIEW_VER}
           codebase-memory-mcp:${CODEBASE_MCP_VER}
           EOF
           )
