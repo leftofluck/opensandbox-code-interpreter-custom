@@ -36,12 +36,12 @@ jobs:
         id: upstream
         run: |
           TOKEN=$(curl -fsSL "https://auth.docker.io/token?service=registry.docker.io&scope=repository:${UPSTREAM_IMAGE}:pull" | jq -r '.token')
-          MANIFEST_JSON=$(curl -fsSL \
+          
+          # latest のマニフェストから amd64 digest を特定
+          AMD64_DIGEST=$(curl -fsSL \
             -H "Authorization: Bearer ${TOKEN}" \
             -H "Accept: application/vnd.docker.distribution.manifest.v2+json, application/vnd.oci.image.index.v1+json" \
-            "https://registry-1.docker.io/v2/${UPSTREAM_IMAGE}/manifests/latest")
-
-          AMD64_DIGEST=$(echo "${MANIFEST_JSON}" | jq -r '
+            "https://registry-1.docker.io/v2/${UPSTREAM_IMAGE}/manifests/latest" | jq -r '
             if .manifests then
               .manifests[] | select(.platform.architecture=="amd64") | .digest
             else
@@ -60,28 +60,25 @@ jobs:
           echo "Base image digest: ${AMD64_DIGEST}"
           echo "digest=${AMD64_DIGEST}" >> "$GITHUB_OUTPUT"
 
-          # Upstream の config blob からバージョンラベルの取得を試みる
-          BASE_MANIFEST_JSON=$(curl -fsSL \
-            -H "Authorization: Bearer ${TOKEN}" \
-            -H "Accept: application/vnd.docker.distribution.manifest.v2+json, application/vnd.oci.image.manifest.v1+json" \
-            "https://registry-1.docker.io/v2/${UPSTREAM_IMAGE}/manifests/${AMD64_DIGEST}")
+          # Docker Hub のタグ一覧を検索し、latest と同じ digest を持つ具体的なバージョンタグ (vX.Y.Z 等) を逆引き
+          TAGS_JSON=$(curl -fsSL "https://registry.hub.docker.com/v2/repositories/${UPSTREAM_IMAGE}/tags?page_size=25")
+          BASE_VER=$(echo "${TAGS_JSON}" | jq -r --arg DIGEST "${AMD64_DIGEST}" '
+            .results[] 
+            | select(.name != "latest") 
+            | select(.digest == $DIGEST or (.images[]? | .digest == $DIGEST)) 
+            | .name
+          ' | grep -E '^v?[0-9]+(\.[0-9]+)*' | head -n 1)
 
-          CONFIG_DIGEST=$(echo "${BASE_MANIFEST_JSON}" | jq -r '.config.digest // empty')
-          BASE_VER=""
-          if [ -n "${CONFIG_DIGEST}" ]; then
-            CONFIG_JSON=$(curl -fsSL \
-              -H "Authorization: Bearer ${TOKEN}" \
-              "https://registry-1.docker.io/v2/${UPSTREAM_IMAGE}/blobs/${CONFIG_DIGEST}")
-            BASE_VER=$(echo "${CONFIG_JSON}" | jq -r '
-              .config.Labels["org.opencontainers.image.version"] //
-              .config.Labels["version"] // empty
-            ')
+          # Docker Hub タグで見つからない場合は GitHub API (open-sandbox/code-interpreter) から最新リリースを取得
+          if [ -z "${BASE_VER}" ]; then
+            BASE_VER=$(curl -fsSL "https://api.github.com/repos/open-sandbox/code-interpreter/releases/latest" 2>/dev/null | jq -r '.tag_name // empty')
           fi
 
-          # ラベルにバージョンがない場合は短縮ダイジェスト (sha256:xxxx の xxxx部分12文字) を使用
-          if [ -z "${BASE_VER}" ]; then
+          # それでも取得できない場合は短縮 digest を利用
+          if [ -z "${BASE_VER}" ] || [ "${BASE_VER}" = "null" ]; then
             BASE_VER="${AMD64_DIGEST:7:12}"
           fi
+
           echo "Base image version: ${BASE_VER}"
           echo "base_version=${BASE_VER}" >> "$GITHUB_OUTPUT"
 
@@ -94,7 +91,7 @@ jobs:
           BASE_DIGEST="${{ steps.upstream.outputs.digest }}"
           BASE_VER="${{ steps.upstream.outputs.base_version }}"
 
-          # 1. Rust Stable バージョン (Rust 本体コンパイラの正確なバージョンを取得)
+          # 1. Rust Stable バージョン
           RUST_VER=$(curl -fsSL https://static.rust-lang.org/dist/channel-rust-stable.toml | sed -n '/\[pkg\.rust\]/,/\[/p' | sed -n 's/^version = "\([^ "]*\).*/\1/p' | head -n 1)
 
           # 2. Lua
@@ -107,11 +104,14 @@ jobs:
           LUAROCKS_VER=$(curl -fsSL -o /dev/null -w "%{url_effective}" https://github.com/luarocks/luarocks/releases/latest | sed 's|.*/v\?||')
           LUAROCKS_SHA=$(git ls-remote --tags https://github.com/luarocks/luarocks.git "refs/tags/v${LUAROCKS_VER}*" | sort -k2 | tail -n1 | awk '{print $1}')
 
-          # 5. OpenCode: 最新リリース + Commit SHA
-          OPENCODE_VER=$(curl -fsSL -o /dev/null -w "%{url_effective}" https://github.com/anomalyco/opencode/releases/latest | sed 's|.*/v\?||')
+          # 5. OpenCode: npm レジストリ (@opencode/cli) または GitHub Releases から正確に取得
+          OPENCODE_VER=$(curl -fsSL "https://registry.npmjs.org/@opencode/cli/latest" | jq -r '.version // empty')
+          if [ -z "${OPENCODE_VER}" ]; then
+            OPENCODE_VER=$(curl -fsSL -o /dev/null -w "%{url_effective}" https://github.com/anomalyco/opencode/releases/latest | sed 's|.*/v\?||')
+          fi
           OPENCODE_SHA=$(git ls-remote --tags https://github.com/anomalyco/opencode.git "refs/tags/v${OPENCODE_VER}*" | sort -k2 | tail -n1 | awk '{print $1}')
 
-          # 6. OpenCodeReview (Alibaba リポジトリのタグSHA + npm/GitHub最新バージョン)
+          # 6. OpenCodeReview
           OCR_REPO="alibaba/open-code-review"
           CODE_REVIEW_VER=$(curl -fsSL "https://registry.npmjs.org/@alibaba/open-code-review/latest" | jq -r '.version // empty')
           if [ -z "${CODE_REVIEW_VER}" ]; then

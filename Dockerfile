@@ -77,8 +77,10 @@ RUN LUA_MAJOR_MINOR=$(lua -e 'print(_VERSION:match("%d+%.%d+"))') && \
     echo "export LUA_CPATH=\"${LUA_CPATH_VAL}\"" >> /etc/profile.d/lua.sh && \
     chmod +x /etc/profile.d/lua.sh
 
-# 7. OpenCode (最新バイナリを /usr/local/bin に配置)
-RUN curl -fsSL https://raw.githubusercontent.com/anomalyco/opencode/main/install.sh | bash -s -- --dir /usr/local/bin
+# 7. OpenCode (公式 v2 インストーラを使用)
+# /usr/local/bin にバイナリが配置されるように環境変数や配置先を調整
+RUN curl -fsSL https://opencode.ai/v2/install | bash -s -- --dir /usr/local/bin || \
+    (curl -fsSL https://opencode.ai/v2/install | bash && cp /root/.opencode/bin/opencode /usr/local/bin/opencode)
 
 # 8. OpenCodeReview (全 Node.js バージョンへの動的グローバルインストール)
 RUN set -euo pipefail && \
@@ -142,13 +144,17 @@ set -e
 
 DUMMY_KEY="vault-managed-key"
 
-# 13.1. OpenCode 設定 (モデル名とURLのみ注入、キーはダミー固定)
+# 共通 LLM 設定のフォールバック
+COMMON_BASE_URL="${LLM_BASE_URL}"
+COMMON_MODEL="${LLM_MODEL:-default-model}"
+
+# 13.1. OpenCode 設定 (モデル名とURLのみ注入)
 OPENCODE_CFG="/root/.config/opencode/opencode.json"
 mkdir -p "$(dirname "${OPENCODE_CFG}")"
 
-if [ -n "${OPENCODE_BASE_URL}" ] || [ -n "${OPENCODE_MODEL}" ] || [ -n "${LLM_BASE_URL}" ]; then
-    BASE_URL="${OPENCODE_BASE_URL:-${LLM_BASE_URL}}"
-    MODEL_NAME="${OPENCODE_MODEL:-${LLM_MODEL:-default-model}}"
+if [ -n "${OPENCODE_BASE_URL}" ] || [ -n "${OPENCODE_MODEL}" ] || [ -n "${COMMON_BASE_URL}" ]; then
+    BASE_URL="${OPENCODE_BASE_URL:-${COMMON_BASE_URL}}"
+    MODEL_NAME="${OPENCODE_MODEL:-${COMMON_MODEL}}"
     PROVIDER_ID="${OPENCODE_PROVIDER:-selfhosted}"
 
     TMP_JSON=$(mktemp)
@@ -177,9 +183,9 @@ if [ ! -f "${OCR_CFG}" ]; then
     echo "{}" > "${OCR_CFG}"
 fi
 
-if [ -n "${OCR_BASE_URL}" ] || [ -n "${LLM_BASE_URL}" ]; then
-    OCR_URL="${OCR_BASE_URL:-${LLM_BASE_URL}}"
-    OCR_MDL="${OCR_MODEL:-${LLM_MODEL:-default-model}}"
+if [ -n "${OCR_BASE_URL}" ] || [ -n "${COMMON_BASE_URL}" ]; then
+    OCR_URL="${OCR_BASE_URL:-${COMMON_BASE_URL}}"
+    OCR_MDL="${OCR_MODEL:-${COMMON_MODEL}}"
     OCR_PRV="${OCR_PROVIDER:-custom-selfhosted}"
 
     TMP_OCR=$(mktemp)
@@ -200,17 +206,31 @@ if [ -n "${OCR_BASE_URL}" ] || [ -n "${LLM_BASE_URL}" ]; then
       ' "${OCR_CFG}" > "${TMP_OCR}" && mv "${TMP_OCR}" "${OCR_CFG}"
 fi
 
-# 13.3. Semgrep MCP サーバーの起動 (streamable-http)
+# 13.3. Browser Use 向けバックエンド設定 (OpenAI 互換エンドポイント・APIキーの設定)
+# Browser Use は langchain-openai を内部で使用するため、OPENAI_API_BASE と OPENAI_API_KEY を設定
+if [ -n "${BROWSER_USE_BASE_URL}" ] || [ -n "${COMMON_BASE_URL}" ]; then
+    export OPENAI_API_BASE="${BROWSER_USE_BASE_URL:-${COMMON_BASE_URL}}"
+fi
+if [ -n "${BROWSER_USE_API_KEY}" ]; then
+    export OPENAI_API_KEY="${BROWSER_USE_API_KEY}"
+elif [ -z "${OPENAI_API_KEY}" ]; then
+    export OPENAI_API_KEY="${DUMMY_KEY}"
+fi
+if [ -n "${BROWSER_USE_MODEL}" ] || [ -n "${COMMON_MODEL}" ]; then
+    export BROWSER_USE_MODEL="${BROWSER_USE_MODEL:-${COMMON_MODEL}}"
+fi
+
+# 13.4. Semgrep MCP サーバーの起動 (streamable-http)
 if command -v semgrep >/dev/null 2>&1; then
     semgrep mcp --transport streamable-http --port 8000 &
 fi
 
-# 13.4. OpenCode serve の起動 (ポート 4096)
+# 13.5. OpenCode serve の起動 (ポート 4096)
 if command -v opencode >/dev/null 2>&1; then
     opencode serve --port 4096 --hostname 0.0.0.0 &
 fi
 
-# 13.5. Code Interpreter 元のエントリポイント実行
+# 13.6. Code Interpreter 元のエントリポイント実行
 exec /opt/code-interpreter/code-interpreter.sh "$@"
 EOF
 
