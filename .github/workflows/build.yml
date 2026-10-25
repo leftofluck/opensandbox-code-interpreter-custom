@@ -2,6 +2,11 @@ name: Build opensandbox-code-interpreter-custom Image
 
 on:
   workflow_dispatch:
+    inputs:
+      force:
+        description: 'Force build regardless of state'
+        type: boolean
+        default: false
   schedule:
     # 6時間ごとに最新状態を確認
     - cron: "0 */6 * * *"
@@ -179,11 +184,15 @@ jobs:
         run: |
           CURRENT="${{ steps.current.outputs.current_hash }}"
           DESIRED="${{ steps.deps.outputs.state_hash }}"
+          FORCE="${{ inputs.force }}"
 
           echo "Current : ${CURRENT}"
           echo "Desired : ${DESIRED}"
 
-          if [ -n "${CURRENT}" ] && [ "${CURRENT}" = "${DESIRED}" ]; then
+          if [ "${FORCE}" = "true" ]; then
+            echo "Force build requested."
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+          elif [ -n "${CURRENT}" ] && [ "${CURRENT}" = "${DESIRED}" ]; then
             echo "All dependencies and base image are up-to-date. Skipping build."
             echo "should_build=false" >> "$GITHUB_OUTPUT"
           else
