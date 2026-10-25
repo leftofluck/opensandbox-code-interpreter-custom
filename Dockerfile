@@ -23,16 +23,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     fonts-liberation \
     && rm -rf /var/lib/apt/lists/*
 
-# 2. Rust, Cargo, Clippy, rustfmt (最新安定版)
-RUN mkdir -p /usr/local/rustup /usr/local/cargo && \
-    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y \
-        --default-toolchain stable \
-        --profile minimal \
-        --no-modify-path && \
-    /usr/local/cargo/bin/rustup component add clippy rustfmt && \
-    chmod -R a+w /usr/local/rustup /usr/local/cargo
+# 4. LuaJIT (デフォルトブランチ動的ビルド)
+RUN git clone --depth 1 https://github.com/LuaJIT/LuaJIT.git /tmp/luajit && \
+    cd /tmp/luajit && \
+    make && \
+    make install PREFIX=/usr/local && \
+    ln -sf /usr/local/bin/luajit-* /usr/local/bin/luajit && \
+    rm -rf /tmp/luajit
 
-    # 3. Lua (最新安定版動的ビルド)
+# 3. Lua (最新安定版動的ビルド)
 RUN LUA_TARBALL=$(curl -fsSL https://www.lua.org/ftp/ | grep -oE 'lua-[0-9]+\.[0-9]+\.[0-9]+\.tar\.gz' | sort -V | tail -n 1) && \
     echo "Building Lua: ${LUA_TARBALL}" && \
     curl -fsSL "https://www.lua.org/ftp/${LUA_TARBALL}" -o /tmp/lua.tar.gz && \
@@ -126,7 +125,7 @@ set -e
 # 固定のダミーキー (本物の鍵は OpenSandbox Egress Sidecar 側で差し替える)
 DUMMY_KEY="vault-managed-key"
 
-# 1. OpenCode 設定 (モデル名とURLのみ注入、キーはダミー固定)
+# 11.1. OpenCode 設定 (モデル名とURLのみ注入、キーはダミー固定)
 OPENCODE_CFG="/root/.config/opencode/opencode.json"
 mkdir -p "$(dirname "${OPENCODE_CFG}")"
 
@@ -152,7 +151,7 @@ if [ -n "${OPENCODE_BASE_URL}" ] || [ -n "${OPENCODE_MODEL}" ] || [ -n "${LLM_BA
       ' "${OPENCODE_CFG}" > "${TMP_JSON}" && mv "${TMP_JSON}" "${OPENCODE_CFG}"
 fi
 
-# 2. OpenCodeReview 設定 (モデル名とURLのみ注入、キーはダミー固定)
+# 11.2. OpenCodeReview 設定 (モデル名とURLのみ注入、キーはダミー固定)
 OCR_CFG_DIR="/root/.opencodereview"
 OCR_CFG="${OCR_CFG_DIR}/config.json"
 mkdir -p "${OCR_CFG_DIR}"
@@ -184,17 +183,17 @@ if [ -n "${OCR_BASE_URL}" ] || [ -n "${LLM_BASE_URL}" ]; then
       ' "${OCR_CFG}" > "${TMP_OCR}" && mv "${TMP_OCR}" "${OCR_CFG}"
 fi
 
-# 3. Semgrep MCP サーバーの起動 (streamable-http)
+# 11.3. Semgrep MCP サーバーの起動 (streamable-http)
 if command -v semgrep >/dev/null 2>&1; then
     semgrep mcp --transport streamable-http --port 8000 &
 fi
 
-# 4. OpenCode serve の起動 (ポート 4096)
+# 11.4. OpenCode serve の起動 (ポート 4096)
 if command -v opencode >/dev/null 2>&1; then
     opencode serve --port 4096 --hostname 0.0.0.0 &
 fi
 
-# 5. Code Interpreter 元のエントリポイント実行
+# 11.5. Code Interpreter 元のエントリポイント実行
 exec /opt/code-interpreter/code-interpreter.sh "$@"
 EOF
 

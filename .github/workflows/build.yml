@@ -20,6 +20,8 @@ jobs:
     outputs:
       desired_hash: ${{ steps.deps.outputs.state_hash }}
       should_build: ${{ steps.compare.outputs.should_build }}
+      version_tag: ${{ steps.deps.outputs.version_tag }}
+      pkg_description: ${{ steps.deps.outputs.pkg_description }}
 
     steps:
       # ============================================================
@@ -54,9 +56,9 @@ jobs:
           echo "digest=${AMD64_DIGEST}" >> "$GITHUB_OUTPUT"
 
       # ============================================================
-      # Step 2: 各言語・ツールの最新バージョンを動的に解決し State Hash を算出
+      # Step 2: タグのコミットSHAおよび各ツールの実態を解決
       # ============================================================
-      - name: Resolve all dependencies latest versions
+      - name: Resolve all dependencies latest versions & commit SHAs
         id: deps
         run: |
           BASE_DIGEST="${{ steps.upstream.outputs.digest }}"
@@ -67,14 +69,16 @@ jobs:
           # 2. Lua 公式最新版 tarball 名
           LUA_VER=$(curl -fsSL https://www.lua.org/ftp/ | grep -oE 'lua-[0-9]+\.[0-9]+\.[0-9]+\.tar\.gz' | sort -V | tail -n 1)
 
-          # 3. LuaJIT (v2.1 ブランチの HEAD コミットSHA)
-          LUAJIT_HASH=$(git ls-remote https://github.com/LuaJIT/LuaJIT.git refs/heads/v2.1 | awk '{print $1}')
+          # 3. LuaJIT (デフォルトブランチ HEAD コミットSHA)
+          LUAJIT_HASH=$(git ls-remote https://github.com/LuaJIT/LuaJIT.git HEAD | awk '{print $1}')
 
-          # 4. LuaRocks 最新タグ (API制限回避: リダイレクト先URLより取得)
+          # 4. LuaRocks: 最新リリースタグ + そのタグが指す Commit SHA
           LUAROCKS_VER=$(curl -fsSL -o /dev/null -w "%{url_effective}" https://github.com/luarocks/luarocks/releases/latest | sed 's|.*/v\?||')
+          LUAROCKS_SHA=$(git ls-remote --tags https://github.com/luarocks/luarocks.git "refs/tags/v${LUAROCKS_VER}*" | sort -k2 | tail -n1 | awk '{print $1}')
 
-          # 5. OpenCode 最新リリース (API制限回避: リダイレクト先URLより取得)
+          # 5. OpenCode: 最新リリース + Commit SHA
           OPENCODE_VER=$(curl -fsSL -o /dev/null -w "%{url_effective}" https://github.com/anomalyco/opencode/releases/latest | sed 's|.*/v\?||')
+          OPENCODE_SHA=$(git ls-remote --tags https://github.com/anomalyco/opencode.git "refs/tags/v${OPENCODE_VER}*" | sort -k2 | tail -n1 | awk '{print $1}')
 
           # 6. Python パッケージ群の最新バージョン (PyPI JSON API)
           BROWSER_USE_VER=$(curl -fsSL https://pypi.org/pypi/browser-use/json | jq -r '.info.version')
@@ -82,13 +86,14 @@ jobs:
           CODE_REVIEW_VER=$(curl -fsSL https://pypi.org/pypi/open-code-review/json | jq -r '.info.version')
           CODEBASE_MCP_VER=$(curl -fsSL https://pypi.org/pypi/codebase-memory-mcp/json | jq -r '.info.version')
 
+          # 状態判定用サマリー
           STATE_SUMMARY=$(cat <<EOF
           base_image:${BASE_DIGEST}
           rust:${RUST_VER}
           lua:${LUA_VER}
           luajit:${LUAJIT_HASH}
-          luarocks:${LUAROCKS_VER}
-          opencode:${OPENCODE_VER}
+          luarocks:${LUAROCKS_VER}@${LUAROCKS_SHA}
+          opencode:${OPENCODE_VER}@${OPENCODE_SHA}
           browser-use:${BROWSER_USE_VER}
           semgrep:${SEMGREP_VER}
           open-code-review:${CODE_REVIEW_VER}
@@ -101,6 +106,14 @@ jobs:
 
           STATE_HASH=$(echo "${STATE_SUMMARY}" | sha256sum | awk '{print $1}')
           echo "state_hash=${STATE_HASH}" >> "$GITHUB_OUTPUT"
+
+          # 1. バージョンタグ (vYYYYMMDDHH)
+          VERSION_TAG=$(date -u +v%Y%m%d%H)
+          echo "version_tag=${VERSION_TAG}" >> "$GITHUB_OUTPUT"
+
+          # 3. イメージ説明ラベル用テキスト
+          PKG_DESC="rust=${RUST_VER}, lua=${LUA_VER}, luajit=${LUAJIT_HASH:0:7}, luarocks=${LUAROCKS_VER}, opencode=${OPENCODE_VER}, browser-use=${BROWSER_USE_VER}, semgrep=${SEMGREP_VER}, open-code-review=${CODE_REVIEW_VER}, codebase-memory-mcp=${CODEBASE_MCP_VER}"
+          echo "pkg_description=${PKG_DESC}" >> "$GITHUB_OUTPUT"
 
       # ============================================================
       # Step 3: 現在 GHCR にある自作イメージの OCI Label を取得
@@ -201,7 +214,7 @@ jobs:
           password: ${{ github.token }}
 
       # ============================================================
-      # Step 8: OCI Metadata (State Hash を Label に保存)
+      # Step 8: OCI Metadata (バージョンタグ付与 & パッケージ詳細ラベル)
       # ============================================================
       - name: Generate metadata
         id: meta
@@ -210,9 +223,12 @@ jobs:
           images: ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}
           tags: |
             type=raw,value=latest
+            type=raw,value=${{ needs.determine.outputs.version_tag }}
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.description=Built with: ${{ needs.determine.outputs.pkg_description }}
             custom.dependencies.hash=${{ needs.determine.outputs.desired_hash }}
+            custom.packages.info=${{ needs.determine.outputs.pkg_description }}
 
       # ============================================================
       # Step 9: Multi-Arch Build & Push
