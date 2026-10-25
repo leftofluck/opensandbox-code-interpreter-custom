@@ -214,7 +214,7 @@ jobs:
           password: ${{ github.token }}
 
       # ============================================================
-      # Step 8: OCI Metadata (バージョンタグ付与 & パッケージ詳細ラベル)
+      # Step 8: OCI Metadata (タグ・ラベル・アノテーション生成)
       # ============================================================
       - name: Generate metadata
         id: meta
@@ -226,9 +226,11 @@ jobs:
             type=raw,value=${{ needs.determine.outputs.version_tag }}
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
-            org.opencontainers.image.description=Built with: ${{ needs.determine.outputs.pkg_description }}
             custom.dependencies.hash=${{ needs.determine.outputs.desired_hash }}
             custom.packages.info=${{ needs.determine.outputs.pkg_description }}
+          annotations: |
+            org.opencontainers.image.description=Built with: ${{ needs.determine.outputs.pkg_description }}
+            index:org.opencontainers.image.description=Built with: ${{ needs.determine.outputs.pkg_description }}
 
       # ============================================================
       # Step 9: Multi-Arch Build & Push
@@ -247,6 +249,7 @@ jobs:
           cache-to: type=gha,mode=max
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          annotations: ${{ steps.meta.outputs.annotations }}
 
       - name: Show digest
         run: |
